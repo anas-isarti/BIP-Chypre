@@ -1,180 +1,179 @@
-# BIP-Chypre
+#BIP CHYPRE
 import pandas as pd
-import numpy as np # Ajout de numpy pour les opérations sur les tableaux
-import matplotlib.pyplot as plt
-import seaborn as sns # Importation de seaborn pour les heatmaps
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
+import re
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.model_selection import train_test_split
-import xgboost as xgb
-from sklearn.neural_network import MLPClassifier
+import matplotlib.pyplot as plt
+import seaborn as sns
+from IPython.display import clear_output
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 
-# --- 1. LECTURE ET EXPLORATION DES DONNÉES ---
-url = 'spam_ham_dataset.csv'
-df = pd.read_csv(url)
+# 1. Load CSV (after uploading to /content/)
+df = pd.read_csv('/content/spam_ham_dataset.csv')
 
-print("--- df.info() ---")
-df.info()
-print("\n--- df.shape ---")
-print(df.shape)
-print("\n--- df.head(5) ---")
-print(df.head(5))
-print("\n--- df.isnull().sum() ---")
-print(df.isnull().sum())
-print("\n--- df.describe() ---")
-print(df.describe())
+# 2. Simple tokenization
+def tokenize(text):
+    return re.findall(r'\b\w+\b', text.lower())
 
-# Calculate the ham and spam occurances
-value_counts = df['label'].value_counts()
-percentages = (value_counts / len(df)) * 100
-print("\n--- Ham/Spam Value Counts with Percentages ---")
-print(percentages.round(2))
+df['tokens'] = df['text'].apply(tokenize)
+df['processed_text'] = df['tokens'].apply(lambda toks: ' '.join(toks))
 
-# Plot the fire occurances as a pie chart
-print("\n--- Affichage du graphique circulaire ---")
-plt.figure(figsize=(5, 5))
-plt.pie(percentages, labels=percentages.index, autopct='%1.2f%%', startangle=90)
-plt.title('Distribution des labels Ham vs Spam')
-plt.show()
+# 3. Bag-of-Words vectorization with limited vocabulary
+vectorizer = CountVectorizer(max_features=10_000)
+X = vectorizer.fit_transform(df['processed_text'])
+y = df['label_num'].values  # 0 = ham, 1 = spam
 
-
-# --- 2. PRÉPARATION DES DONNÉES ET VECTORISATION  ---
-# Préparation des données
-X = df["text"]
-y = df["label_num"]
-
-# Découpage en jeu d'entraînement et de test
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-
-# Vectorisation TF-IDF
-vectorizer = TfidfVectorizer(stop_words="english", max_features=5000)
-X_train_tfidf = vectorizer.fit_transform(X_train)
-X_test_tfidf = vectorizer.transform(X_test)
-
-
-# --- 3. CRÉATION D'UN JEU DE VALIDATION  ---
-# On divise les données d'entraînement pour créer un jeu de validation.
-X_train_final, X_val, y_train_final, y_val = train_test_split(
-    X_train_tfidf, y_train, test_size=0.2, random_state=42, stratify=y_train
+# 4. Train/test split
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
 )
 
+# 5. PyTorch Dataset & DataLoader
+class SMSDataset(Dataset):
+    def __init__(self, X, y):
+        self.X = torch.tensor(X.toarray(), dtype=torch.float32)
+        self.y = torch.tensor(y, dtype=torch.float32)
+    def __len__(self):
+        return len(self.y)
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
 
-# --- 4. ENTRAÎNEMENT DES MODÈLES  ---
+train_ds = SMSDataset(X_train, y_train)
+test_ds  = SMSDataset(X_test,  y_test)
+train_loader = DataLoader(train_ds, batch_size=32, shuffle=True)
+test_loader  = DataLoader(test_ds,  batch_size=32)
 
-# 4.1. Entraînement du modèle LogisticRegression
-print("\n=== Entraînement de la Régression Logistique ===")
-logreg = LogisticRegression(max_iter=1000)
-logreg.fit(X_train_final, y_train_final) # Entraîné sur le jeu final pour être comparable
-y_pred_logreg = logreg.predict(X_test_tfidf)
+# 6. Logistic Regression model with optional dropout
+class LogisticRegressionModel(nn.Module):
+    def __init__(self, input_dim, p_drop=0.2):
+        super().__init__()
+        self.drop   = nn.Dropout(p_drop)
+        self.linear = nn.Linear(input_dim, 1)
+    def forward(self, x):
+        x = self.drop(x)
+        return torch.sigmoid(self.linear(x)).squeeze(1)
 
-# 4.2. Entraînement du modèle XGBoost avec suivi
-print("\n=== Entraînement de XGBoost avec suivi de la validation ===")
-xgb_model = xgb.XGBClassifier(
-    use_label_encoder=False,
-    eval_metric='logloss',
-    n_estimators=500,
-    random_state=42
-)
-eval_set = [(X_train_final, y_train_final), (X_val, y_val)]
-xgb_model.fit(X_train_final, y_train_final, eval_set=eval_set, verbose=False)
-y_pred_xgb = xgb_model.predict(X_test_tfidf)
+model = LogisticRegressionModel(X_train.shape[1], p_drop=0.2)
 
-# Récupération des résultats pour le graphique XGBoost
-results_xgb = xgb_model.evals_result()
-train_loss_xgb = results_xgb['validation_0']['logloss']
-val_loss_xgb = results_xgb['validation_1']['logloss']
-epochs_xgb = range(1, len(train_loss_xgb) + 1)
+# 7. Focal Loss implementation
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1.0, gamma=2.0, reduction='mean'):
+        super().__init__()
+        self.alpha     = alpha
+        self.gamma     = gamma
+        self.reduction = reduction
 
-# 4.3. Entraînement du modèle MLP avec suivi
-print("\n=== Entraînement du MLP avec suivi de la validation ===")
-mlp = MLPClassifier(
-    hidden_layer_sizes=(100,),
-    max_iter=100,
-    random_state=42,
-    early_stopping=True,
-    validation_fraction=0.2,
-    n_iter_no_change=10
-)
-mlp.fit(X_train_tfidf, y_train)
-y_pred_mlp = mlp.predict(X_test_tfidf)
+    def forward(self, inputs, targets):
+        bce = nn.functional.binary_cross_entropy(inputs, targets, reduction='none')
+        pt  = torch.where(targets == 1, inputs, 1 - inputs)
+        loss = self.alpha * (1 - pt) ** self.gamma * bce
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        return loss
 
-# Récupération des résultats pour le graphique MLP
-train_loss_mlp = mlp.loss_curve_
-val_error_mlp = 1 - np.array(mlp.validation_scores_)
-epochs_mlp = range(1, len(train_loss_mlp) + 1)
+criterion = FocalLoss(alpha=1.0, gamma=2.0)
 
+# 8. Optimizer with L2 weight decay
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
 
-# --- 5. ÉVALUATION DES PERFORMANCES  ---
-print("\n\n--- RÉSULTATS DE L'ÉVALUATION FINALE SUR LE JEU DE TEST ---")
-print("\n=== Logistic Regression ===")
-print("Accuracy:", accuracy_score(y_test, y_pred_logreg))
-print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred_logreg))
-print("Classification Report:\n", classification_report(y_test, y_pred_logreg))
+# 9. Training & evaluation functions
+def train_epoch(model, loader, criterion, optimizer, device):
+    model.train()
+    total_loss = 0
+    for X_batch, y_batch in loader:
+        X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+        optimizer.zero_grad()
+        preds = model(X_batch)
+        loss  = criterion(preds, y_batch)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item() * X_batch.size(0)
+    return total_loss / len(loader.dataset)
 
-print("\n=== XGBoost ===")
-print("Accuracy:", accuracy_score(y_test, y_pred_xgb))
-print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred_xgb))
-print("Classification Report:\n", classification_report(y_test, y_pred_xgb))
+def evaluate(model, loader, criterion, device):
+    model.eval()
+    total_loss, correct = 0, 0
+    with torch.no_grad():
+        for X_batch, y_batch in loader:
+            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+            preds = model(X_batch)
+            loss  = criterion(preds, y_batch)
+            total_loss += loss.item() * X_batch.size(0)
+            predicted = (preds >= 0.5).float()
+            correct  += (predicted == y_batch).sum().item()
+    return total_loss / len(loader.dataset), correct / len(loader.dataset)
 
-print("\n=== MLP Neural Network ===")
-print("Accuracy:", accuracy_score(y_test, y_pred_mlp))
-print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred_mlp))
-print("Classification Report:\n", classification_report(y_test, y_pred_mlp))
+# 10. Training loop with early stopping and real-time plots
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model.to(device)
+n_epochs = 100
+patience, best_val_loss, streak = 5, float('inf'), 0
 
+train_losses, val_losses, val_accs = [], [], []
 
-# --- 6. VISUALISATION DES COURBES D'APPRENTISSAGE  ---
-print("\n--- Affichage des courbes d'apprentissage ---")
-fig, axes = plt.subplots(1, 2, figsize=(20, 7))
-fig.suptitle('Courbes d\'Apprentissage (Training Loss vs Validation Loss)', fontsize=16)
+for epoch in range(1, n_epochs + 1):
+    train_loss = train_epoch(model, train_loader, criterion, optimizer, device)
+    val_loss, val_acc = evaluate(model, test_loader, criterion, device)
 
-# Graphique pour XGBoost
-axes[0].plot(epochs_xgb, train_loss_xgb, 'b-', label='Training Loss')
-axes[0].plot(epochs_xgb, val_loss_xgb, 'r-', label='Validation Loss')
-axes[0].set_title('XGBoost')
-axes[0].set_xlabel('Nombre d\'arbres (Boosting Rounds)')
-axes[0].set_ylabel('Log Loss')
-axes[0].legend()
-axes[0].grid(True)
+    train_losses.append(train_loss)
+    val_losses.append(val_loss)
+    val_accs.append(val_acc)
 
-# Graphique pour MLP
-axes[1].plot(epochs_mlp, train_loss_mlp, 'b-', label='Training Loss')
-axes[1].plot(epochs_mlp, val_error_mlp, 'r-', label='Validation Error')
-axes[1].set_title('Réseau de Neurones (MLP)')
-axes[1].set_xlabel('Epochs')
-axes[1].set_ylabel('Loss / Error')
-axes[1].legend()
-axes[1].grid(True)
-plt.show()
+    # Early stopping
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
+        streak = 0
+        torch.save(model.state_dict(), 'best_model.pt')
+    else:
+        streak += 1
+        if streak >= patience:
+            print(f"Early stopping at epoch {epoch}")
+            break
 
+    # Real-time plotting
+    clear_output(wait=True)
+    plt.figure(figsize=(12,5))
+    plt.subplot(1,2,1)
+    plt.plot(train_losses, label='Train Loss')
+    plt.plot(val_losses,   label='Val Loss')
+    plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.title('Loss over Epochs'); plt.legend()
+    plt.subplot(1,2,2)
+    plt.plot(val_accs, label='Val Accuracy')
+    plt.xlabel('Epoch'); plt.ylabel('Accuracy'); plt.title('Validation Accuracy'); plt.legend()
+    plt.tight_layout()
+    plt.show()
+    print(f"Epoch {epoch} — Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
 
-# --- 7. VISUALISATION AVEC HEATMAPS  ---
-print("\n--- Affichage des matrices de confusion ---")
-cm_logreg = confusion_matrix(y_test, y_pred_logreg)
-cm_xgb = confusion_matrix(y_test, y_pred_xgb)
-cm_mlp = confusion_matrix(y_test, y_pred_mlp)
+# 11. Reload best model and final evaluation
+model.load_state_dict(torch.load('best_model.pt'))
+y_pred = (model(torch.tensor(X_test.toarray(), dtype=torch.float32).to(device)) >= 0.5).int().cpu()
 
-fig, axes = plt.subplots(1, 3, figsize=(22, 6))
-fig.suptitle('Matrices de Confusion pour chaque Modèle (sur le jeu de test)', fontsize=16)
+print("\n=== Final Classification Report ===")
+print(classification_report(y_test, y_pred, target_names=['ham','spam']))
+print("=== Confusion Matrix ===")
+print(confusion_matrix(y_test, y_pred))
+print(f"=== Overall Accuracy: {accuracy_score(y_test, y_pred):.4f} ===")
 
-labels = ['Ham (Vrai)', 'Spam (Vrai)']
-predicted_labels = ['Ham (Prédit)', 'Spam (Prédit)']
+# 12. Plot confusion matrix with heatmap
+def plot_confusion_matrix(y_true, y_pred):
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(5, 4))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=['Ham', 'Spam'],
+                yticklabels=['Ham', 'Spam'])
+    plt.xlabel('Predicted Label')
+    plt.ylabel('True Label')
+    plt.title('Confusion Matrix')
+    plt.show()
 
-sns.heatmap(cm_logreg, annot=True, fmt='d', cmap='Blues', ax=axes[0],
-            xticklabels=predicted_labels, yticklabels=labels)
-axes[0].set_title('Régression Logistique')
-axes[0].set_ylabel('Label Réel')
-axes[0].set_xlabel('Label Prédit')
+plot_confusion_matrix(y_test, y_pred)
 
-sns.heatmap(cm_xgb, annot=True, fmt='d', cmap='Greens', ax=axes[1],
-            xticklabels=predicted_labels, yticklabels=labels)
-axes[1].set_title('XGBoost')
-axes[1].set_xlabel('Label Prédit')
-
-sns.heatmap(cm_mlp, annot=True, fmt='d', cmap='Oranges', ax=axes[2],
-            xticklabels=predicted_labels, yticklabels=labels)
-axes[2].set_title('Réseau de Neurones (MLP)')
-axes[2].set_xlabel('Label Prédit')
-
-plt.tight_layout(rect=[0, 0, 1, 0.95])
-plt.show()
+# 13. Print token lists for inspection
+print("\n=== Token lists (first 10 examples) ===")
+for toks in df['tokens'].head(10):
+    print(toks)
