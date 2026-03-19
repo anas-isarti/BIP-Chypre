@@ -2,7 +2,7 @@
 Projet de Recherche Intensif – Summer School BIP (July 2025)
 European University Cyprus (Larnaca, Chypre)
 
-Ce projet a été développé dans le cadre d'un Blended Intensive Program (BIP) focalisé sur l'IA et la cybersécurité. L'objectif était de concevoir, en une semaine intensive, un classificateur de pointe capable de traiter des données textuelles tout en résolvant des problématiques de déséquilibre de classes via une architecture Deep Learning personnalisée.
+Ce projet a été développé dans le cadre d'un Blended Intensive Program (BIP) focalisé sur l'IA et la cybersécurité. L'objectif était de concevoir, en une semaine intensive, un classificateur de pointe capable de traiter des données textuelles tout en résolvant des problématiques de déséquilibre de classes.
 
 📊 Visualisations & Résultats
 Cette section présente les performances du modèle obtenues après l'entraînement.
@@ -50,7 +50,7 @@ Preprocessing : Tokenisation et vectorisation des courriels.
 
 Data Loading : Pipeline de tenseurs optimisé pour l'entraînement.
 
-Modeling : Modèle de régression logistique profond.
+Modeling : Modèle de régression logistique.
 
 Evaluation : Analyse fine via F1-Score et Matrice de confusion.
 
