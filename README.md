@@ -37,7 +37,7 @@ Early Stopping : Monitoring dynamique pour arrêter l'entraînement au point opt
 🛠️ Stack Technologique
 Langage : Python
 
-Deep Learning : PyTorch
+Framework : PyTorch
 
 Traitement de données : Pandas, Scikit-Learn
 
